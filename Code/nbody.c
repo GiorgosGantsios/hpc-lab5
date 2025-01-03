@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "timer.h"
+#include <omp.h>
 
 #define SOFTENING 1e-9f  /* Will guard against denormals */
 
@@ -52,7 +53,8 @@ int main(const int argc, const char** argv) {
     StartTimer();
 
     bodyForce(p, dt, nBodies); // compute interbody forces
-
+    
+    #pragma omp parallel for
     for (int i = 0 ; i < nBodies; i++) { // integrate position
       p[i].x += p[i].vx*dt;
       p[i].y += p[i].vy*dt;
