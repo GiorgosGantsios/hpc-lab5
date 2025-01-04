@@ -7,28 +7,20 @@ CFLAGS = -std=c99 -O3 -fopenmp -D_DEFAULT_SOURCE
 NVCC_FLAGS = -arch=sm_37 -O3
 
 # Sources and targets
-CPU_SRC = nbody.c
 GPU_SRC = nbody.cu
 OMP_SRC = nbody_omp.c
-OBJ = nbody.o nbody_gpu.o
+OBJ = nbody_gpu.o
 HEADERS = 
 
 # Targets
-CPU_TARGET = nbody_cpu
 GPU_TARGET = nbody_gpu
 OMP_TARGET = nbody_omp
 
 # Default target
-all: $(CPU_TARGET) $(GPU_TARGET) $(OMP_TARGET)
-
-# CPU target
-$(CPU_TARGET): $(CPU_SRC) $(HEADERS)
-	$(CC) $(CFLAGS) -c $(CPU_SRC) -o nbody.o
-	$(CC) $(CFLAGS) -o $(CPU_TARGET) nbody.o -lm
+all: $(GPU_TARGET) $(OMP_TARGET)
 
 # GPU target
-$(GPU_TARGET): $(CPU_SRC) $(GPU_SRC) $(HEADERS)
-	$(CC) $(CFLAGS) -c $(CPU_SRC) -o nbody.o
+$(GPU_TARGET): $(GPU_SRC) $(HEADERS)
 	$(NVCC) $(NVCC_FLAGS) -c $(GPU_SRC) -o nbody_gpu.o
 	$(NVCC) $(NVCC_FLAGS) -o $(GPU_TARGET) $(OBJ) -lm
 
@@ -38,7 +30,7 @@ $(OMP_TARGET): $(OMP_SRC) $(HEADERS)
 
 # Clean up
 clean:
-	rm -f $(CPU_TARGET) $(GPU_TARGET) $(OMP_TARGET) $(OBJ)
+	rm -f $(GPU_TARGET) $(OMP_TARGET) $(OBJ)
 
 # Run 12 times with optional arguments and save output to file
 experiment_12:
@@ -64,4 +56,3 @@ experiment_12:
 # Prevent Makefile from treating extra arguments as targets
 %:
 	@:
-
