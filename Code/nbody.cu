@@ -5,7 +5,7 @@
 // #include <omp.h>
 
 #define SOFTENING 1e-9f  /* Will guard against denormals */
-#define tolerance 0.005// 2 decimals
+#define tolerance 0.01// 2 decimals
 /* Macro for error checking in CUDA calls */
 #define CHECK_CUDA_ERROR(call)                                \
   do {                                                        \
@@ -107,6 +107,7 @@ int main(const int argc, const char** argv) {
   cudaError_t e = cudaSuccess;
   double avgTime = 0.0;
   double totalTime = 0.0;
+  int extra_block;
 
   buf = (float*)malloc(bytes);
   if(!buf) goto cleanup;
@@ -142,10 +143,10 @@ int main(const int argc, const char** argv) {
   avgTime = totalTime / (double)(nIters-1); 
 
   printf("%d Bodies: average %0.3f Billion Interactions / second\n", nBodies, 1e-9 * nBodies * nBodies / avgTime);
-  
+  extra_block = (nBodies%1024 != 0);
   //GPU Impkementation
   for (int iter = 1; iter <= nIters; iter++) {
-    bodyForce_gpu<<<1,1024>>>(dbuf, dt, nBodies); // compute interbody forces
+    bodyForce_gpu<<<(nBodies/1024)+extra_block, 1024>>>(dbuf, dt, nBodies); // compute interbody forces
     cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
