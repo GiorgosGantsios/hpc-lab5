@@ -43,6 +43,55 @@ void bodyForce(Body *p, float dt, int n) {
   }
 }
 
+__global__ void bodyForce_gpu(Body *p, float dt, int n) {
+  float distSqr;
+  float invDist;
+  float invDist3;
+  int j;//, i;
+  float Fx = 0.0f; float Fy = 0.0f; float Fz = 0.0f;
+
+  int index = blockIdx.x*blockDim.x + threadIdx.x;
+  for (j = 0; j < n; j++) {
+      float dx = p[j].x - p[index].x;
+      float dy = p[j].y - p[index].y;
+      float dz = p[j].z - p[index].z;
+      distSqr = dx*dx + dy*dy + dz*dz + SOFTENING;
+      invDist = 1.0f / sqrtf(distSqr);
+      invDist3 = invDist * invDist * invDist;
+
+      Fx += dx * invDist3; Fy += dy * invDist3; Fz += dz * invDist3;
+  }
+
+  p[index].vx += dt*Fx; p[index].vy += dt*Fy; p[index].vz += dt*Fz;
+
+__syncthreads();
+
+  p[index].x += p[index].vx*dt;
+  p[index].y += p[index].vy*dt;
+  p[index].z += p[index].vz*dt;
+}
+
+int check_correctness(Body *hbuf, Body *p, int nBodies){
+  for (int i = 0; i < nBodies; i++) {
+    // Compare positions and velocities between CPU and GPU
+    if (fabs(p[i].x - hbuf[i].x) > tolerance ||
+        fabs(p[i].y - hbuf[i].y) > tolerance ||
+        fabs(p[i].z - hbuf[i].z) > tolerance ||
+        fabs(p[i].vx - hbuf[i].vx) > tolerance ||
+        fabs(p[i].vy - hbuf[i].vy) > tolerance ||
+        fabs(p[i].vz - hbuf[i].vz) > tolerance) {
+        
+        printf("Difference exceeds tolerance at index: %d\n", i);
+        printf("Position - CPU: (%.6f, %.6f, %.6f), GPU: (%.6f, %.6f, %.6f)\n",
+               p[i].x, p[i].y, p[i].z, hbuf[i].x, hbuf[i].y, hbuf[i].z);
+        printf("Velocity - CPU: (%.6f, %.6f, %.6f), GPU: (%.6f, %.6f, %.6f)\n",
+               p[i].vx, p[i].vy, p[i].vz, hbuf[i].vx, hbuf[i].vy, hbuf[i].vz);
+        return 0;
+    }
+  }
+  return 1;
+}
+
 int main(const int argc, const char** argv) {
   
   int nBodies = 30000;
@@ -69,6 +118,9 @@ int main(const int argc, const char** argv) {
 
   randomizeBodies(buf, 6*nBodies); // Init pos / vel data
 
+  CHECK_CUDA_ERROR(cudaMemcpy(dbuf, p, bytes, cudaMemcpyHostToDevice));
+
+  // CPU Implementation
   for (int iter = 1; iter <= nIters; iter++) {
     StartTimer();
 
@@ -91,21 +143,47 @@ int main(const int argc, const char** argv) {
 
   printf("%d Bodies: average %0.3f Billion Interactions / second\n", nBodies, 1e-9 * nBodies * nBodies / avgTime);
   
+  //GPU Impkementation
+  for (int iter = 1; iter <= nIters; iter++) {
+    bodyForce_gpu<<<1,1024>>>(dbuf, dt, nBodies); // compute interbody forces
+    cudaDeviceSynchronize();
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA error: %s\n", cudaGetErrorString(err));
+        break;
+    }
+  }
+
+
   CHECK_CUDA_ERROR(cudaMemcpy(hbuf, dbuf, bytes, cudaMemcpyDeviceToHost));
   
   // Chech similarity between CPU (buf) and GPU (hbuf)
-  for (int i = 0; i < nBodies; i++) {
-    // Compare positions and velocities between CPU and GPU
-    if (fabs(p[i].x - hbuf[i].x) > tolerance ||
-        fabs(p[i].y - hbuf[i].y) > tolerance ||
-        fabs(p[i].z - hbuf[i].z) > tolerance ||
-        fabs(p[i].vx - hbuf[i].vx) > tolerance ||
-        fabs(p[i].vy - hbuf[i].vy) > tolerance ||
-        fabs(p[i].vz - hbuf[i].vz) > tolerance) {
-          printf("Difference bigger than tolerance in index: %d\n", i);
-          goto cleanup;
-    }
+  if(check_correctness(hbuf, p, nBodies)){
+    printf("SUCCESS: Results are the same!");
   }
+  else{
+    printf("FAIL: Results are diffesrent");
+    goto cleanup;
+  }
+  
+  
+//   for (int i = 0; i < nBodies; i++) {
+//     // Compare positions and velocities between CPU and GPU
+//     if (fabs(p[i].x - hbuf[i].x) > tolerance ||
+//         fabs(p[i].y - hbuf[i].y) > tolerance ||
+//         fabs(p[i].z - hbuf[i].z) > tolerance ||
+//         fabs(p[i].vx - hbuf[i].vx) > tolerance ||
+//         fabs(p[i].vy - hbuf[i].vy) > tolerance ||
+//         fabs(p[i].vz - hbuf[i].vz) > tolerance) {
+        
+//         printf("Difference exceeds tolerance at index: %d\n", i);
+//         printf("Position - CPU: (%.6f, %.6f, %.6f), GPU: (%.6f, %.6f, %.6f)\n",
+//                p[i].x, p[i].y, p[i].z, hbuf[i].x, hbuf[i].y, hbuf[i].z);
+//         printf("Velocity - CPU: (%.6f, %.6f, %.6f), GPU: (%.6f, %.6f, %.6f)\n",
+//                p[i].vx, p[i].vy, p[i].vz, hbuf[i].vx, hbuf[i].vy, hbuf[i].vz);
+//         goto cleanup;
+//     }
+// }
   
   
   
@@ -113,6 +191,7 @@ int main(const int argc, const char** argv) {
   
   cleanup:
   if (buf) free(buf);
+  if (hbuf) free(hbuf);
   if (dbuf) cudaFree(dbuf);
 
   cudaDeviceSynchronize();

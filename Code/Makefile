@@ -4,7 +4,7 @@ NVCC = nvcc
 
 # Common flags
 CFLAGS = -std=c99 -O3 -fopenmp -D_DEFAULT_SOURCE
-NVCC_FLAGS = -arch=sm_37 -O3
+NVCC_FLAGS = -O3 #-arch=sm_37
 
 # Sources and targets
 GPU_SRC = nbody.cu
