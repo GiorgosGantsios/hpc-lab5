@@ -15,27 +15,40 @@ void randomizeBodies(float *data, int n) {
 }
 
 void bodyForce(Body *p, float dt, int n) {
-    #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < n; i++) {
-        float Fx = 0.0f, Fy = 0.0f, Fz = 0.0f;
+  float distSqr;
+  float invDist;
+  float invDist3;
+  int j, i;
+  float Fx = 0.0f; float Fy = 0.0f; float Fz = 0.0f;
+  //float vx = 0.0, vy = 0.0, vz = 0.0;
 
-        for (int j = 0; j < n; j++) {
-            float dx = p[j].x - p[i].x;
-            float dy = p[j].y - p[i].y;
-            float dz = p[j].z - p[i].z;
-            float distSqr = dx * dx + dy * dy + dz * dz + SOFTENING;
-            float invDist = 1.0f / sqrtf(distSqr);
-            float invDist3 = invDist * invDist * invDist;
+  #pragma omp parallel for schedule(static) private(distSqr, invDist, invDist3, j) reduction(+: Fx) reduction(+: Fy) reduction(+: Fz) //reduction(+: vx) reduction(+: vy) reduction(+: vz) reduction(+: p[:n]) reduction(+: p[:n])
+  for (i = 0; i < n; i++) { 
+    Fx = 0.0f;
+    Fy = 0.0f;
+    Fz = 0.0f;
+    for (j = 0; j < n; j++) {
+        float dx = p[j].x - p[i].x;
+        float dy = p[j].y - p[i].y;
+        float dz = p[j].z - p[i].z;
+        distSqr = dx*dx + dy*dy + dz*dz + SOFTENING;
+        invDist = 1.0f / sqrtf(distSqr);
+        invDist3 = invDist * invDist * invDist;
 
-            Fx += dx * invDist3;
-            Fy += dy * invDist3;
-            Fz += dz * invDist3;
-        }
-
-        p[i].vx += dt * Fx;
-        p[i].vy += dt * Fy;
-        p[i].vz += dt * Fz;
+        Fx += dx * invDist3; Fy += dy * invDist3; Fz += dz * invDist3;
     }
+    // vx = p[i].vx + dt*Fx;
+    // vy = p[i].vy + dt*Fy;
+    // vz = p[i].vz + dt*Fz;
+    // #pragma omp critical
+    // {
+    //   p[i].vx = vx;
+    //   p[i].vy = vy;
+    //   p[i].vz = vz;
+    // }
+
+    p[i].vx += dt*Fx; p[i].vy += dt*Fy; p[i].vz += dt*Fz;
+  }
 }
 
 int main(const int argc, const char **argv) {
@@ -60,7 +73,7 @@ int main(const int argc, const char **argv) {
 
         bodyForce(p, dt, nBodies); // compute interbody forces
 
-        #pragma omp parallel for
+        // #pragma omp parallel for
         for (int i = 0; i < nBodies; i++) { // integrate position
             p[i].x += p[i].vx * dt;
             p[i].y += p[i].vy * dt;

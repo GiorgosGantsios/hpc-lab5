@@ -51,24 +51,28 @@ __global__ void bodyForce_gpu(Body *p, float dt, int n) {
   float Fx = 0.0f; float Fy = 0.0f; float Fz = 0.0f;
 
   int index = blockIdx.x*blockDim.x + threadIdx.x;
-  for (j = 0; j < n; j++) {
-      float dx = p[j].x - p[index].x;
-      float dy = p[j].y - p[index].y;
-      float dz = p[j].z - p[index].z;
-      distSqr = dx*dx + dy*dy + dz*dz + SOFTENING;
-      invDist = 1.0f / sqrtf(distSqr);
-      invDist3 = invDist * invDist * invDist;
+  if(index < n){
+    // Calculate constituted force
+    for (j = 0; j < n; j++) {
+        float dx = p[j].x - p[index].x;
+        float dy = p[j].y - p[index].y;
+        float dz = p[j].z - p[index].z;
+        distSqr = dx*dx + dy*dy + dz*dz + SOFTENING;
+        invDist = 1.0f / sqrtf(distSqr);
+        invDist3 = invDist * invDist * invDist;
 
-      Fx += dx * invDist3; Fy += dy * invDist3; Fz += dz * invDist3;
+        Fx += dx * invDist3; Fy += dy * invDist3; Fz += dz * invDist3;
+    }
+
+    // Update velocity
+    p[index].vx += dt*Fx; p[index].vy += dt*Fy; p[index].vz += dt*Fz;
+
+    __syncthreads();
+    // Update position
+    p[index].x += p[index].vx*dt;
+    p[index].y += p[index].vy*dt;
+    p[index].z += p[index].vz*dt;
   }
-
-  p[index].vx += dt*Fx; p[index].vy += dt*Fy; p[index].vz += dt*Fz;
-
-__syncthreads();
-
-  p[index].x += p[index].vx*dt;
-  p[index].y += p[index].vy*dt;
-  p[index].z += p[index].vz*dt;
 }
 
 int check_correctness(Body *hbuf, Body *p, int nBodies){
@@ -105,9 +109,11 @@ int main(const int argc, const char** argv) {
   Body *p;
   int bytes = nBodies*sizeof(Body);
   cudaError_t e = cudaSuccess;
+  cudaEvent_t startCuda, stopCuda;
   double avgTime = 0.0;
   double totalTime = 0.0;
   int extra_block;
+  float msec = 0.0;
 
   buf = (float*)malloc(bytes);
   if(!buf) goto cleanup;
@@ -143,57 +149,49 @@ int main(const int argc, const char** argv) {
   avgTime = totalTime / (double)(nIters-1); 
 
   printf("%d Bodies: average %0.3f Billion Interactions / second\n", nBodies, 1e-9 * nBodies * nBodies / avgTime);
+  
+  
   extra_block = (nBodies%1024 != 0);
+  
   //GPU Impkementation
+  cudaEventCreate(&startCuda);
+  cudaEventCreate(&stopCuda);
+
+  cudaEventRecord(startCuda, 0);
   for (int iter = 1; iter <= nIters; iter++) {
-    bodyForce_gpu<<<(nBodies/1024)+extra_block, 1024>>>(dbuf, dt, nBodies); // compute interbody forces
+    bodyForce_gpu<<<(nBodies/1024)+extra_block, 1024>>>(dbuf, dt, nBodies);
     cudaDeviceSynchronize();
     cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        printf("CUDA error: %s\n", cudaGetErrorString(err));
-        break;
+    if(err!=cudaSuccess){
+      printf("ERROR: %s, FILE: %s, LINE: %d\n", cudaGetErrorString(err), __FILE__, __LINE__);
+      goto cleanup;
+    }
+    else{
+      printf("cudaGetLastError() == cudaSuccess!\n");
     }
   }
 
-
   CHECK_CUDA_ERROR(cudaMemcpy(hbuf, dbuf, bytes, cudaMemcpyDeviceToHost));
-  
+  cudaEventRecord(stopCuda, 0);
+  cudaEventSynchronize(stopCuda);
+  cudaEventElapsedTime(&msec, startCuda, stopCuda);
+  printf("GPU TIME: %f\n", msec);
   // Chech similarity between CPU (buf) and GPU (hbuf)
   if(check_correctness(hbuf, p, nBodies)){
-    printf("SUCCESS: Results are the same!");
+    printf("SUCCESS: Results are the same!\n");
   }
   else{
-    printf("FAIL: Results are diffesrent");
+    printf("FAIL: Results are diffesrent\n");
     goto cleanup;
   }
-  
-  
-//   for (int i = 0; i < nBodies; i++) {
-//     // Compare positions and velocities between CPU and GPU
-//     if (fabs(p[i].x - hbuf[i].x) > tolerance ||
-//         fabs(p[i].y - hbuf[i].y) > tolerance ||
-//         fabs(p[i].z - hbuf[i].z) > tolerance ||
-//         fabs(p[i].vx - hbuf[i].vx) > tolerance ||
-//         fabs(p[i].vy - hbuf[i].vy) > tolerance ||
-//         fabs(p[i].vz - hbuf[i].vz) > tolerance) {
-        
-//         printf("Difference exceeds tolerance at index: %d\n", i);
-//         printf("Position - CPU: (%.6f, %.6f, %.6f), GPU: (%.6f, %.6f, %.6f)\n",
-//                p[i].x, p[i].y, p[i].z, hbuf[i].x, hbuf[i].y, hbuf[i].z);
-//         printf("Velocity - CPU: (%.6f, %.6f, %.6f), GPU: (%.6f, %.6f, %.6f)\n",
-//                p[i].vx, p[i].vy, p[i].vz, hbuf[i].vx, hbuf[i].vy, hbuf[i].vz);
-//         goto cleanup;
-//     }
-// }
-  
-  
-  
-  
   
   cleanup:
   if (buf) free(buf);
   if (hbuf) free(hbuf);
   if (dbuf) cudaFree(dbuf);
+
+  CHECK_CUDA_ERROR(cudaEventDestroy(startCuda));
+  CHECK_CUDA_ERROR(cudaEventDestroy(stopCuda));
 
   cudaDeviceSynchronize();
   e = cudaGetLastError();
