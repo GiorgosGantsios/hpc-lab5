@@ -100,11 +100,13 @@ __global__ void bodyForce_gpu_tiled(Body *p_hor, Body *p_ver, float *Fx, float *
   }
 }
 
-__global__ void calculate_pos_vel(Body *p_ver, float *Fx, float *Fy, float *Fz, float dt, int n){
+__global__ void calculate_pos_vel(Body *p_ver, float *Fx, float *Fy, float *Fz, float dt, int tile_num, int n){
   // Update velocity
     int index = blockIdx.x*blockDim.x + threadIdx.x;
     if(index < n){
-      p_ver[index].vx += dt*Fx[index]; p_ver[index].vy += dt*Fy[index]; p_ver[index].vz += dt*Fz[index];
+      for(int i = (index) * n; i < (index) * n + n; i++){
+        p_ver[index].vx += dt*Fx[i]; p_ver[index].vy += dt*Fy[i]; p_ver[index].vz += dt*Fz[i];
+      }
 
       // __syncthreads();
       // Update position
@@ -150,6 +152,7 @@ int main(const int argc, const char** argv) {
   Body *hbuf;
   Body *p;
   int bytes = nBodies*sizeof(Body);
+  int tile_size_bytes;
   cudaError_t e = cudaSuccess;
   cudaEvent_t startCuda, stopCuda;
   double avgTime = 0.0;
@@ -157,13 +160,16 @@ int main(const int argc, const char** argv) {
   int extra_block;
   float msec = 0.0;
 
+  tile_size_bytes = (TILE_SIZE*sizeof(Body) < bytes) ? TILE_SIZE*sizeof(Body): bytes;
+
+
   buf = (float*)malloc(bytes);
   if(!buf) goto cleanup;
   hbuf = (Body*)malloc(bytes);
   if(!hbuf) goto cleanup;
   CHECK_CUDA_ERROR(cudaMalloc((void**)&dbuf, bytes));
-  CHECK_CUDA_ERROR(cudaMalloc((void**)&dbuf_hor, TILE_SIZE*sizeof(Body)));
-  CHECK_CUDA_ERROR(cudaMalloc((void**)&dbuf_ver, TILE_SIZE*sizeof(Body)));
+  CHECK_CUDA_ERROR(cudaMalloc((void**)&dbuf_hor, tile_size_bytes*sizeof(Body)));
+  CHECK_CUDA_ERROR(cudaMalloc((void**)&dbuf_ver, tile_size_bytes*sizeof(Body)));
   
   CHECK_CUDA_ERROR(cudaMalloc((void**)&dFx, nBodies*nBodies*sizeof(float)));
   CHECK_CUDA_ERROR(cudaMalloc((void**)&dFy, nBodies*nBodies*sizeof(float)));
@@ -201,7 +207,6 @@ int main(const int argc, const char** argv) {
   
   
   extra_block = (nBodies%1024 != 0);
-  
   //GPU Impkementation
   cudaEventCreate(&startCuda);
   cudaEventCreate(&stopCuda);
@@ -214,11 +219,11 @@ int main(const int argc, const char** argv) {
     CHECK_CUDA_ERROR(cudaMemset(dFz, 0, nBodies*nBodies*sizeof(float)));
     for(int i = 0; i < nBodies; i += TILE_SIZE){
       int j = 0;
-      int offset = i*nBodies+j;
-      CHECK_CUDA_ERROR(cudaMemcpy(dbuf_ver, dbuf + i, (TILE_SIZE*sizeof(Body) < bytes) ? TILE_SIZE*sizeof(Body): bytes, cudaMemcpyDeviceToDevice));
-      
+      int offset = i*nBodies;
+      CHECK_CUDA_ERROR(cudaMemcpy(dbuf_ver, dbuf + i, tile_size_bytes, cudaMemcpyDeviceToDevice));
+
       for(j = 0; j < nBodies; j += TILE_SIZE){
-        CHECK_CUDA_ERROR(cudaMemcpy(dbuf_hor, dbuf + j, (TILE_SIZE*sizeof(Body) < bytes) ? TILE_SIZE*sizeof(Body): bytes, cudaMemcpyDeviceToDevice));
+        CHECK_CUDA_ERROR(cudaMemcpy(dbuf_hor, dbuf + j, tile_size_bytes, cudaMemcpyDeviceToDevice));
         offset = i*nBodies+j;
         bodyForce_gpu_tiled<<<(nBodies/TILE_SIZE) + (nBodies % TILE_SIZE > 0 ? 1 : 0), TILE_SIZE>>>(dbuf_hor, dbuf_ver, dFx+offset, dFy+offset, dFz+offset, dt, TILE_SIZE);
         cudaDeviceSynchronize();
@@ -231,7 +236,7 @@ int main(const int argc, const char** argv) {
           printf("cudaGetLastError() == cudaSuccess! iter = %d, i = %d, j = %d\n", iter, i, j);
         }
       }
-      calculate_pos_vel<<<(nBodies/TILE_SIZE) + (nBodies % TILE_SIZE > 0 ? 1 : 0), TILE_SIZE>>>(dbuf_ver, dFx+offset, dFy+offset, dFz+offset, dt, TILE_SIZE);
+      calculate_pos_vel<<< 1 /*(nBodies/TILE_SIZE) + (nBodies % TILE_SIZE > 0 ? 1 : 0)*/, TILE_SIZE>>>(dbuf_ver, dFx+i*nBodies, dFy+i*nBodies, dFz+i*nBodies, dt, i/TILE_SIZE, nBodies);
       cudaDeviceSynchronize();
       cudaError_t err = cudaGetLastError();
       if(err!=cudaSuccess){
@@ -241,12 +246,11 @@ int main(const int argc, const char** argv) {
       else{
         printf("cudaGetLastError() == cudaSuccess!\n");
       }
-      CHECK_CUDA_ERROR(cudaMemcpy(dbuf+i, dbuf_ver, (TILE_SIZE*sizeof(Body) < bytes) ? TILE_SIZE*sizeof(Body): bytes , cudaMemcpyDeviceToDevice));
-      CHECK_CUDA_ERROR(cudaMemcpy(hbuf+i, dbuf_ver, (TILE_SIZE*sizeof(Body) < bytes) ? TILE_SIZE*sizeof(Body): bytes , cudaMemcpyDeviceToHost));
+      CHECK_CUDA_ERROR(cudaMemcpy(dbuf+i, dbuf_ver, tile_size_bytes , cudaMemcpyDeviceToDevice));
     }
   }
 
-  // CHECK_CUDA_ERROR(cudaMemcpy(hbuf, dbuf, bytes, cudaMemcpyDeviceToHost));
+  CHECK_CUDA_ERROR(cudaMemcpy(hbuf, dbuf, bytes, cudaMemcpyDeviceToHost));
   cudaEventRecord(stopCuda, 0);
   cudaEventSynchronize(stopCuda);
   cudaEventElapsedTime(&msec, startCuda, stopCuda);
@@ -259,7 +263,9 @@ int main(const int argc, const char** argv) {
     printf("FAIL: Results are diffesrent\n");
     goto cleanup;
   }
-  
+  CHECK_CUDA_ERROR(cudaEventDestroy(startCuda));
+  CHECK_CUDA_ERROR(cudaEventDestroy(stopCuda));
+
   cleanup:
   if (buf) free(buf);
   if (hbuf) free(hbuf);
@@ -269,9 +275,6 @@ int main(const int argc, const char** argv) {
   if (dFx) cudaFree(dFx);
   if (dFy) cudaFree(dFy);
   if (dFz) cudaFree(dFz);
-
-  CHECK_CUDA_ERROR(cudaEventDestroy(startCuda));
-  CHECK_CUDA_ERROR(cudaEventDestroy(stopCuda));
 
   cudaDeviceSynchronize();
   e = cudaGetLastError();
