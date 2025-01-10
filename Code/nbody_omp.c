@@ -22,7 +22,7 @@ void bodyForce(Body *p, float dt, int n) {
   float Fx = 0.0f; float Fy = 0.0f; float Fz = 0.0f;
   //float vx = 0.0, vy = 0.0, vz = 0.0;
 
-  #pragma omp parallel for schedule(static) private(distSqr, invDist, invDist3, j) reduction(+: Fx) reduction(+: Fy) reduction(+: Fz) //reduction(+: vx) reduction(+: vy) reduction(+: vz) reduction(+: p[:n]) reduction(+: p[:n])
+  #pragma omp parallel for //schedule(static) private(distSqr, invDist, invDist3, j) reduction(+: Fx) reduction(+: Fy) reduction(+: Fz) //reduction(+: vx) reduction(+: vy) reduction(+: vz) reduction(+: p[:n]) reduction(+: p[:n])
   for (i = 0; i < n; i++) { 
     Fx = 0.0f;
     Fy = 0.0f;
@@ -73,7 +73,7 @@ int main(const int argc, const char **argv) {
 
         bodyForce(p, dt, nBodies); // compute interbody forces
 
-        // #pragma omp parallel for
+        #pragma omp parallel for
         for (int i = 0; i < nBodies; i++) { // integrate position
             p[i].x += p[i].vx * dt;
             p[i].y += p[i].vy * dt;
